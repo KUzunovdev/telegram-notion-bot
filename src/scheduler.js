@@ -166,36 +166,37 @@ export function startScheduler(bot) {
     }
   });
 
-  // ── Every 10 min — time-specific reminders (ping 10 min before) ──────────
-  cron.schedule("*/10 * * * *", async () => {
+  // ── Every 5 min — time-specific reminders (fires at task time ±5 min) ─────
+  cron.schedule("*/5 * * * *", async () => {
     try {
-      const now  = new Date();
-      const in10 = new Date(now.getTime() + 10 * 60000);
-      const in20 = new Date(now.getTime() + 20 * 60000);
+      const now      = new Date();
+      const fiveAgo  = new Date(now.getTime() - 5 * 60000);
+      const fiveAhead = new Date(now.getTime() + 5 * 60000);
 
       const pages = await getTodayRemindableTasks();
       for (const page of pages) {
         if (remindedToday.has(page.id)) continue;
 
         const dueStr = prop(page, "Due", "date");
-        if (!dueStr || !dueStr.includes("T")) continue; // date-only handled above
+        if (!dueStr || !dueStr.includes("T")) continue; // date-only handled by 30-min check
 
         const taskTime = new Date(dueStr);
-        if (taskTime < in10 || taskTime >= in20) continue; // not in the 10-min window
+        if (taskTime < fiveAgo || taskTime > fiveAhead) continue; // outside ±5 min window
 
         const title    = prop(page, "Title",    "title")  ?? "(untitled)";
         const priority = prop(page, "Priority", "select");
         const emoji    = PRIORITY_EMOJI[priority] ?? "⚪";
+        const timeStr  = dueStr.slice(11, 16);
 
         const sentMsg = await bot.api.sendMessage(
           chatId,
-          `⏰ *In 10 min:* ${emoji} ${title} · ${dueStr.slice(11, 16)}\n_Reply: 1h · 2h · tomorrow · skip_`,
+          `⏰ *Reminder:* ${emoji} ${title} · ${timeStr}\n_Reply: 1h · 2h · tomorrow · skip_`,
           { parse_mode: "Markdown" }
         );
 
         await pushNotify({
-          title:    `⏰ In 10 min: ${title}`,
-          body:     `${dueStr.slice(11, 16)} · ${priority ?? "P2"}`,
+          title:    `⏰ ${title}`,
+          body:     `${timeStr} · ${priority ?? "P2"}`,
           priority: ntfyPriority(priority),
           tags:     "alarm_clock",
         });

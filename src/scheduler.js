@@ -17,6 +17,7 @@ import {
   prop,
 } from "./format.js";
 import { reminderMessages } from "./state.js";
+import { pushNotify, ntfyPriority } from "./ntfy.js";
 
 const PRIORITY_EMOJI = { P1: "🔴", P2: "🟡", P3: "🟢" };
 
@@ -56,6 +57,12 @@ export function startScheduler(bot) {
       const text  = formatOverdueAlert(pages);
       if (text) {
         await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
+        await pushNotify({
+          title:    `⚠️ ${pages.length} overdue task${pages.length !== 1 ? "s" : ""}`,
+          body:     pages.map(p => prop(p, "Title", "title") ?? "(untitled)").join(", "),
+          priority: "high",
+          tags:     "warning",
+        });
       }
     } catch (err) {
       console.error("[scheduler] Overdue alert failed:", err.message);
@@ -107,6 +114,15 @@ export function startScheduler(bot) {
           `⬆️ *Priority escalated:*\n${lines.join("\n")}`,
           { parse_mode: "Markdown" }
         );
+        const p1s = escalated.filter(e => e.newPriority === "P1");
+        if (p1s.length > 0) {
+          await pushNotify({
+            title:    `🔴 ${p1s.length} task${p1s.length !== 1 ? "s" : ""} escalated to P1`,
+            body:     p1s.map(e => e.title).join(", "),
+            priority: "urgent",
+            tags:     "rotating_light",
+          });
+        }
       }
     } catch (err) {
       console.error("[scheduler] Priority escalation failed:", err.message);
@@ -176,6 +192,13 @@ export function startScheduler(bot) {
           `⏰ *In 10 min:* ${emoji} ${title} · ${dueStr.slice(11, 16)}\n_Reply: 1h · 2h · tomorrow · skip_`,
           { parse_mode: "Markdown" }
         );
+
+        await pushNotify({
+          title:    `⏰ In 10 min: ${title}`,
+          body:     `${dueStr.slice(11, 16)} · ${priority ?? "P2"}`,
+          priority: ntfyPriority(priority),
+          tags:     "alarm_clock",
+        });
 
         reminderMessages.set(sentMsg.message_id, page.id);
         remindedToday.add(page.id);

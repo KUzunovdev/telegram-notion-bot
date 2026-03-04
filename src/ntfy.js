@@ -9,10 +9,13 @@ export async function pushNotify({ title, body, priority = "default", tags = "be
   if (!topic) return;
 
   try {
+    // HTTP headers must be ASCII — strip emojis and non-Latin characters
+    const safeTitle = title.replace(/[^\x00-\x7F]/g, "").trim() || "Task reminder";
+
     await fetch(`https://ntfy.sh/${topic}`, {
       method: "POST",
       headers: {
-        "Title":    title,
+        "Title":    safeTitle,
         "Priority": priority,
         "Tags":     tags,
       },

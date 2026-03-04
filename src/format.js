@@ -126,6 +126,56 @@ export function formatWeeklyReview(doneThisWeek, nextWeekTasks) {
   return `📊 *Weekly review:*\n\n${parts.join("\n\n")}`;
 }
 
+export function formatMonthCalendar(pages) {
+  const MONTH_NAMES = ["January","February","March","April","May","June",
+                       "July","August","September","October","November","December"];
+  const DAY_NAMES   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+  const now      = new Date();
+  const todayISO = now.toISOString().slice(0, 10);
+  const header   = `📅 *${MONTH_NAMES[now.getMonth()]} ${now.getFullYear()}*`;
+
+  if (pages.length === 0) return `${header}\n\n_No open tasks this month._`;
+
+  // Group by date
+  const byDate = new Map();
+  for (const page of pages) {
+    const dueStr = prop(page, "Due", "date");
+    if (!dueStr) continue;
+    const key = dueStr.slice(0, 10);
+    if (!byDate.has(key)) byDate.set(key, []);
+    byDate.get(key).push(page);
+  }
+
+  const lines = [header, ""];
+  for (const [dateKey, tasks] of [...byDate.entries()].sort()) {
+    const d       = new Date(dateKey + "T12:00:00Z"); // noon UTC avoids DST edge cases
+    const dayName = DAY_NAMES[d.getUTCDay()];
+    const dayNum  = d.getUTCDate();
+    const isToday = dateKey === todayISO;
+
+    lines.push(`*${dayName} ${dayNum}${isToday ? " ◀ today" : ""}*`);
+    for (const task of tasks) {
+      const title    = prop(task, "Title",    "title")  ?? "(untitled)";
+      const priority = prop(task, "Priority", "select");
+      const dueStr   = prop(task, "Due",      "date");
+      const emoji    = PRIORITY_EMOJI[priority] ?? "⚪";
+      const time     = dueStr?.includes("T")
+        ? " · " + new Date(dueStr).toLocaleTimeString("en-GB", { timeZone: "Europe/Sofia", hour: "2-digit", minute: "2-digit" })
+        : "";
+      lines.push(`  ${emoji} ${title}${time}`);
+    }
+    lines.push("");
+  }
+
+  const text = lines.join("\n");
+  // Telegram message limit is 4096 chars
+  if (text.length > 3900) {
+    return text.slice(0, 3900) + "\n\n_... truncated — too many tasks to display_";
+  }
+  return text;
+}
+
 export function formatTaskConfirmation(task) {
   const emoji = PRIORITY_EMOJI[task.priority] ?? "⚪";
   let msg = `✅ ${emoji} *${task.title}* · ${task.priority}`;

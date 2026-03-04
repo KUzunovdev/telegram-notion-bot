@@ -354,6 +354,32 @@ export async function escalateOverdueTasks() {
   return escalated;
 }
 
+/**
+ * Fetches all Open tasks due in the current calendar month.
+ */
+export async function getMonthTasks() {
+  const now      = new Date();
+  const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+  const lastDay  = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const toISO    = (d) => d.toISOString().slice(0, 10);
+
+  const response = await notion.databases.query({
+    database_id: DATABASE_ID,
+    filter: {
+      and: [
+        { property: "Due",    date:   { on_or_after:  toISO(firstDay) } },
+        { property: "Due",    date:   { on_or_before: toISO(lastDay)  } },
+        { property: "Status", select: { does_not_equal: "Done" } },
+      ],
+    },
+    sorts: [
+      { property: "Due",      direction: "ascending" },
+      { property: "Priority", direction: "ascending" },
+    ],
+  });
+  return response.results;
+}
+
 export async function getThisWeeksTasks() {
   const now = new Date();
   const day = now.getDay();

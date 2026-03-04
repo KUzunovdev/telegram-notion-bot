@@ -2,8 +2,8 @@ import "dotenv/config";
 import { readFileSync, writeFileSync } from "fs";
 import { Bot } from "grammy";
 import { onVoice, onText, onPhoto, onCallback } from "./handlers.js";
-import { getTodaysTasks } from "./notion.js";
-import { formatTaskList } from "./format.js";
+import { getTodaysTasks, getMonthTasks } from "./notion.js";
+import { formatTaskList, formatMonthCalendar } from "./format.js";
 import { startScheduler } from "./scheduler.js";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -73,11 +73,18 @@ bot.command("today", async (ctx) => {
   await ctx.reply(text, { parse_mode: "Markdown", reply_markup: keyboard ?? undefined });
 });
 
+bot.command("calendar", async (ctx) => {
+  const pages = await getMonthTasks();
+  const text  = formatMonthCalendar(pages);
+  await ctx.reply(text, { parse_mode: "Markdown" });
+});
+
 bot.command("help", (ctx) =>
   ctx.reply(
     "*Commands:*\n" +
     "/start – Welcome & usage\n" +
     "/today – Today's tasks with action buttons\n" +
+    "/calendar – Full month view\n" +
     "/chatid – Your chat ID\n" +
     "/help – This message\n\n" +
     "*Priorities:* P1 🔴 urgent · P2 🟡 normal · P3 🟢 someday\n\n" +

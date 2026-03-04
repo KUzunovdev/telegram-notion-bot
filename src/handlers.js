@@ -117,16 +117,18 @@ async function trySnooze(ctx, text) {
     let newDate;
     const now = new Date();
 
+    let label;
     if (t === "1h") {
-      const d = new Date(now.getTime() + 3600000);
-      newDate = d.toISOString().slice(0, 16) + ":00+02:00";
+      newDate = new Date(now.getTime() + 3600000).toISOString();
+      label   = "1 hour";
     } else if (t === "2h") {
-      const d = new Date(now.getTime() + 7200000);
-      newDate = d.toISOString().slice(0, 16) + ":00+02:00";
+      newDate = new Date(now.getTime() + 7200000).toISOString();
+      label   = "2 hours";
     } else if (t === "tomorrow" || t === "tmrw") {
       const d = new Date(now);
       d.setDate(d.getDate() + 1);
       newDate = d.toISOString().slice(0, 10);
+      label   = "tomorrow";
     } else if (t === "skip") {
       reminderMessages.delete(replyMsgId);
       await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, "⏭ Reminder dismissed.");
@@ -141,7 +143,7 @@ async function trySnooze(ctx, text) {
     reminderMessages.delete(replyMsgId);
     await ctx.api.editMessageText(
       ctx.chat.id, statusMsg.message_id,
-      `⏰ Snoozed to *${newDate.slice(0, 10)}${newDate.includes("T") ? " " + newDate.slice(11, 16) : ""}*`,
+      `⏰ Snoozed — reminder in *${label}*`,
       { parse_mode: "Markdown" }
     );
     return true;

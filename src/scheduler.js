@@ -20,10 +20,19 @@ import { reminderMessages } from "./state.js";
 import { pushNotify, ntfyPriority } from "./ntfy.js";
 
 const PRIORITY_EMOJI = { P1: "🔴", P2: "🟡", P3: "🟢" };
+const TZ = "Europe/Sofia";
 
-// Task IDs reminded today (date-based reminders) — cleared at midnight
+// Task IDs reminded today — cleared at midnight
 let remindedToday = new Set();
 remindedToday.lastDate = "";
+
+function resetRemindedIfNeeded() {
+  const nowDate = new Date().toISOString().slice(0, 10);
+  if (remindedToday.lastDate !== nowDate) {
+    remindedToday = new Set();
+    remindedToday.lastDate = nowDate;
+  }
+}
 
 /**
  * Start all scheduled jobs.
@@ -36,7 +45,7 @@ export function startScheduler(bot) {
     return;
   }
 
-  // ── 9:00 AM — morning digest ──────────────────────────────────────────────
+  // ── 9:00 AM Sofia — morning digest ───────────────────────────────────────
   cron.schedule("0 9 * * *", async () => {
     try {
       const pages = await getTodaysTasks();
@@ -48,9 +57,9 @@ export function startScheduler(bot) {
     } catch (err) {
       console.error("[scheduler] Morning digest failed:", err.message);
     }
-  });
+  }, { timezone: TZ });
 
-  // ── 7:00 PM — overdue alert ───────────────────────────────────────────────
+  // ── 7:00 PM Sofia — overdue alert ─────────────────────────────────────────
   cron.schedule("0 19 * * *", async () => {
     try {
       const pages = await getOverdueTasks();
@@ -67,9 +76,9 @@ export function startScheduler(bot) {
     } catch (err) {
       console.error("[scheduler] Overdue alert failed:", err.message);
     }
-  });
+  }, { timezone: TZ });
 
-  // ── 9:00 PM — evening wrap-up ────────────────────────────────────────────
+  // ── 9:00 PM Sofia — evening wrap-up ───────────────────────────────────────
   cron.schedule("0 21 * * *", async () => {
     try {
       const tomorrow    = new Date();
@@ -87,9 +96,9 @@ export function startScheduler(bot) {
     } catch (err) {
       console.error("[scheduler] Evening wrap-up failed:", err.message);
     }
-  });
+  }, { timezone: TZ });
 
-  // ── Sunday 6:00 PM — weekly review ───────────────────────────────────────
+  // ── Sunday 6:00 PM Sofia — weekly review ──────────────────────────────────
   cron.schedule("0 18 * * 0", async () => {
     try {
       const [doneThisWeek, nextWeekTasks] = await Promise.all([
@@ -101,9 +110,9 @@ export function startScheduler(bot) {
     } catch (err) {
       console.error("[scheduler] Weekly review failed:", err.message);
     }
-  });
+  }, { timezone: TZ });
 
-  // ── 3:00 AM — priority escalation ────────────────────────────────────────
+  // ── 3:00 AM Sofia — priority escalation ───────────────────────────────────
   cron.schedule("0 3 * * *", async () => {
     try {
       const escalated = await escalateOverdueTasks();
@@ -127,26 +136,19 @@ export function startScheduler(bot) {
     } catch (err) {
       console.error("[scheduler] Priority escalation failed:", err.message);
     }
-  });
+  }, { timezone: TZ });
 
-  // ── Every 30 min — date-only reminders ───────────────────────────────────
-  // For tasks with Remind=true and a date-only due (no specific time).
+  // ── Every 30 min — date-only reminders ────────────────────────────────────
   cron.schedule("*/30 * * * *", async () => {
     try {
-      // Reset reminded set at midnight
-      const nowDate = new Date().toISOString().slice(0, 10);
-      if (remindedToday.lastDate !== nowDate) {
-        remindedToday = new Set();
-        remindedToday.lastDate = nowDate;
-      }
+      resetRemindedIfNeeded();
 
       const pages = await getTodayRemindableTasks();
       for (const page of pages) {
         if (remindedToday.has(page.id)) continue;
 
         const dueStr = prop(page, "Due", "date");
-        // Skip datetime tasks here — handled by the 10-min checker
-        if (dueStr && dueStr.includes("T")) continue;
+        if (dueStr && dueStr.includes("T")) continue; // datetime tasks handled by 5-min check
 
         const title    = prop(page, "Title",    "title")  ?? "(untitled)";
         const priority = prop(page, "Priority", "select");
@@ -166,11 +168,14 @@ export function startScheduler(bot) {
     }
   });
 
-  // ── Every 5 min — time-specific reminders (fires at task time ±5 min) ─────
+  // ── Every 5 min — time-specific reminders (fires at task time ±30 min) ────
+  // Wide look-back window catches reminders missed during restarts.
   cron.schedule("*/5 * * * *", async () => {
     try {
+      resetRemindedIfNeeded();
+
       const now        = new Date();
-      const thirtyAgo  = new Date(now.getTime() - 30 * 60000); // catch up after restarts
+      const thirtyAgo  = new Date(now.getTime() - 30 * 60000);
       const fiveAhead  = new Date(now.getTime() +  5 * 60000);
 
       const pages = await getTodayRemindableTasks();
@@ -178,25 +183,29 @@ export function startScheduler(bot) {
         if (remindedToday.has(page.id)) continue;
 
         const dueStr = prop(page, "Due", "date");
-        if (!dueStr || !dueStr.includes("T")) continue; // date-only handled by 30-min check
+        if (!dueStr || !dueStr.includes("T")) continue;
 
         const taskTime = new Date(dueStr);
-        if (taskTime < thirtyAgo || taskTime > fiveAhead) continue; // outside window
+        if (taskTime < thirtyAgo || taskTime > fiveAhead) continue;
 
         const title    = prop(page, "Title",    "title")  ?? "(untitled)";
         const priority = prop(page, "Priority", "select");
         const emoji    = PRIORITY_EMOJI[priority] ?? "⚪";
-        const timeStr  = dueStr.slice(11, 16);
+
+        // Display the time portion in Sofia timezone
+        const localTime = taskTime.toLocaleTimeString("en-GB", {
+          timeZone: TZ, hour: "2-digit", minute: "2-digit",
+        });
 
         const sentMsg = await bot.api.sendMessage(
           chatId,
-          `⏰ *Reminder:* ${emoji} ${title} · ${timeStr}\n_Reply: 1h · 2h · tomorrow · skip_`,
+          `⏰ *Reminder:* ${emoji} ${title} · ${localTime}\n_Reply: 1h · 2h · tomorrow · skip_`,
           { parse_mode: "Markdown" }
         );
 
         await pushNotify({
           title:    `⏰ ${title}`,
-          body:     `${timeStr} · ${priority ?? "P2"}`,
+          body:     `${localTime} · ${priority ?? "P2"}`,
           priority: ntfyPriority(priority),
           tags:     "alarm_clock",
         });
@@ -209,5 +218,5 @@ export function startScheduler(bot) {
     }
   });
 
-  console.log("✅ Scheduler started (09:00 digest · 19:00 overdue · 21:00 wrap-up · Sunday 18:00 review · 03:00 escalation · time reminders)");
+  console.log(`✅ Scheduler started in ${TZ} (09:00 digest · 19:00 overdue · 21:00 wrap-up · Sunday 18:00 review · 03:00 escalation · time reminders every 5 min)`);
 }

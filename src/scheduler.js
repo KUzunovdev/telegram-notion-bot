@@ -169,9 +169,9 @@ export function startScheduler(bot) {
   // ── Every 5 min — time-specific reminders (fires at task time ±5 min) ─────
   cron.schedule("*/5 * * * *", async () => {
     try {
-      const now      = new Date();
-      const fiveAgo  = new Date(now.getTime() - 5 * 60000);
-      const fiveAhead = new Date(now.getTime() + 5 * 60000);
+      const now        = new Date();
+      const thirtyAgo  = new Date(now.getTime() - 30 * 60000); // catch up after restarts
+      const fiveAhead  = new Date(now.getTime() +  5 * 60000);
 
       const pages = await getTodayRemindableTasks();
       for (const page of pages) {
@@ -181,7 +181,7 @@ export function startScheduler(bot) {
         if (!dueStr || !dueStr.includes("T")) continue; // date-only handled by 30-min check
 
         const taskTime = new Date(dueStr);
-        if (taskTime < fiveAgo || taskTime > fiveAhead) continue; // outside ±5 min window
+        if (taskTime < thirtyAgo || taskTime > fiveAhead) continue; // outside window
 
         const title    = prop(page, "Title",    "title")  ?? "(untitled)";
         const priority = prop(page, "Priority", "select");

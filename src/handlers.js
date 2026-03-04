@@ -17,6 +17,14 @@ import {
 import { formatTaskList, formatTaskConfirmation, prop } from "./format.js";
 import { reminderMessages } from "./state.js";
 
+// Ensures datetime strings include the Sofia timezone offset (+02:00).
+// Notion stores bare "YYYY-MM-DDTHH:MM:00" as UTC, which shifts times by 2h.
+function applyTz(dateStr) {
+  if (!dateStr || !dateStr.includes("T")) return dateStr;
+  if (dateStr.includes("+") || dateStr.endsWith("Z")) return dateStr;
+  return dateStr + "+02:00";
+}
+
 // Last shown task list per chat — for inline button context
 const lastList = new Map();
 
@@ -322,9 +330,10 @@ async function executeAction(ctx, action, currentTasks) {
     case "reschedule": {
       const page = await findTaskByRef(action.task_ref ?? "");
       if (!page) return `❓ Could not find task matching "${action.task_ref}".`;
-      const title = prop(page, "Title", "title");
-      await rescheduleTask(page.id, action.to_date);
-      return `⏭ "${title}" rescheduled to ${action.to_date}.`;
+      const title   = prop(page, "Title", "title");
+      const newDate = applyTz(action.to_date);
+      await rescheduleTask(page.id, newDate);
+      return `⏭ "${title}" rescheduled to ${newDate}.`;
     }
 
     default:

@@ -172,3 +172,38 @@ Rules:
   const { actions } = JSON.parse(toolCall.function.arguments);
   return actions;
 }
+
+/**
+ * Analyzes an image (via URL) and extracts an actionable task from it.
+ * Uses a vision-capable model regardless of OPENROUTER_MODEL.
+ * Returns a task object {title, priority, due_date, notes} or null.
+ */
+export async function analyzePhoto(imageUrl) {
+  const response = await client.chat.completions.create({
+    model: "openai/gpt-4o-mini",
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are a task extraction assistant. Analyze the image and extract any to-do, deadline, action item, or reminder visible in it. " +
+          "Return a JSON object with: title (string, required), priority (\"P1\"|\"P2\"|\"P3\"), due_date (\"YYYY-MM-DD\" or null), notes (extra context or null). " +
+          "If nothing actionable is visible, return {\"title\": null}.",
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text",      text: "Extract the task from this image." },
+          { type: "image_url", image_url: { url: imageUrl } },
+        ],
+      },
+    ],
+    response_format: { type: "json_object" },
+  });
+
+  try {
+    const parsed = JSON.parse(response.choices[0]?.message?.content ?? "{}");
+    return parsed.title ? parsed : null;
+  } catch {
+    return null;
+  }
+}

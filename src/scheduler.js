@@ -1,11 +1,28 @@
 import cron from "node-cron";
-import { getTodaysTasks, getRemindableTasks } from "./notion.js";
-import { formatTaskList, prop } from "./format.js";
+import {
+  getTodaysTasks,
+  getTodayRemindableTasks,
+  getOverdueTasks,
+  getDoneTodayTasks,
+  getDoneThisWeekTasks,
+  getNextWeekTasks,
+  getTasksByDate,
+  escalateOverdueTasks,
+} from "./notion.js";
+import {
+  formatTaskList,
+  formatOverdueAlert,
+  formatEveningWrapup,
+  formatWeeklyReview,
+  prop,
+} from "./format.js";
+import { reminderMessages } from "./state.js";
 
 const PRIORITY_EMOJI = { P1: "🔴", P2: "🟡", P3: "🟢" };
 
-// IDs already reminded this calendar day — cleared at midnight
+// Task IDs reminded today (date-based reminders) — cleared at midnight
 let remindedToday = new Set();
+remindedToday.lastDate = "";
 
 /**
  * Start all scheduled jobs.
@@ -32,37 +49,141 @@ export function startScheduler(bot) {
     }
   });
 
-  // ── Every 30 min — reminder check ────────────────────────────────────────
+  // ── 7:00 PM — overdue alert ───────────────────────────────────────────────
+  cron.schedule("0 19 * * *", async () => {
+    try {
+      const pages = await getOverdueTasks();
+      const text  = formatOverdueAlert(pages);
+      if (text) {
+        await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
+      }
+    } catch (err) {
+      console.error("[scheduler] Overdue alert failed:", err.message);
+    }
+  });
+
+  // ── 9:00 PM — evening wrap-up ────────────────────────────────────────────
+  cron.schedule("0 21 * * *", async () => {
+    try {
+      const tomorrow    = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const tomorrowISO = tomorrow.toISOString().slice(0, 10);
+
+      const [doneTasks, openTasks, tomorrowTasks] = await Promise.all([
+        getDoneTodayTasks(),
+        getTodaysTasks(),
+        getTasksByDate(tomorrowISO),
+      ]);
+
+      const text = formatEveningWrapup(doneTasks, openTasks, tomorrowTasks);
+      await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
+    } catch (err) {
+      console.error("[scheduler] Evening wrap-up failed:", err.message);
+    }
+  });
+
+  // ── Sunday 6:00 PM — weekly review ───────────────────────────────────────
+  cron.schedule("0 18 * * 0", async () => {
+    try {
+      const [doneThisWeek, nextWeekTasks] = await Promise.all([
+        getDoneThisWeekTasks(),
+        getNextWeekTasks(),
+      ]);
+      const text = formatWeeklyReview(doneThisWeek, nextWeekTasks);
+      await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
+    } catch (err) {
+      console.error("[scheduler] Weekly review failed:", err.message);
+    }
+  });
+
+  // ── 3:00 AM — priority escalation ────────────────────────────────────────
+  cron.schedule("0 3 * * *", async () => {
+    try {
+      const escalated = await escalateOverdueTasks();
+      if (escalated.length > 0) {
+        const lines = escalated.map(e => `${e.oldPriority}→${e.newPriority}: ${e.title}`);
+        await bot.api.sendMessage(
+          chatId,
+          `⬆️ *Priority escalated:*\n${lines.join("\n")}`,
+          { parse_mode: "Markdown" }
+        );
+      }
+    } catch (err) {
+      console.error("[scheduler] Priority escalation failed:", err.message);
+    }
+  });
+
+  // ── Every 30 min — date-only reminders ───────────────────────────────────
+  // For tasks with Remind=true and a date-only due (no specific time).
   cron.schedule("*/30 * * * *", async () => {
     try {
-      // Clear the reminded set at midnight
+      // Reset reminded set at midnight
       const nowDate = new Date().toISOString().slice(0, 10);
       if (remindedToday.lastDate !== nowDate) {
         remindedToday = new Set();
         remindedToday.lastDate = nowDate;
       }
 
-      const pages = await getRemindableTasks();
+      const pages = await getTodayRemindableTasks();
       for (const page of pages) {
         if (remindedToday.has(page.id)) continue;
 
+        const dueStr = prop(page, "Due", "date");
+        // Skip datetime tasks here — handled by the 10-min checker
+        if (dueStr && dueStr.includes("T")) continue;
+
         const title    = prop(page, "Title",    "title")  ?? "(untitled)";
         const priority = prop(page, "Priority", "select");
-        const dueDate  = prop(page, "Due",       "date");
         const emoji    = PRIORITY_EMOJI[priority] ?? "⚪";
 
-        await bot.api.sendMessage(
+        const sentMsg = await bot.api.sendMessage(
           chatId,
-          `🔔 *Reminder:* ${emoji} ${title} · ${priority}${dueDate ? ` · ${dueDate}` : ""}`,
+          `🔔 *Reminder:* ${emoji} ${title} · ${priority}${dueStr ? ` · ${dueStr}` : ""}`,
           { parse_mode: "Markdown" }
         );
 
+        reminderMessages.set(sentMsg.message_id, page.id);
         remindedToday.add(page.id);
       }
     } catch (err) {
-      console.error("[scheduler] Reminder check failed:", err.message);
+      console.error("[scheduler] Date reminder check failed:", err.message);
     }
   });
 
-  console.log("✅ Scheduler started (morning digest at 09:00, reminders every 30 min)");
+  // ── Every 10 min — time-specific reminders (ping 10 min before) ──────────
+  cron.schedule("*/10 * * * *", async () => {
+    try {
+      const now  = new Date();
+      const in10 = new Date(now.getTime() + 10 * 60000);
+      const in20 = new Date(now.getTime() + 20 * 60000);
+
+      const pages = await getTodayRemindableTasks();
+      for (const page of pages) {
+        if (remindedToday.has(page.id)) continue;
+
+        const dueStr = prop(page, "Due", "date");
+        if (!dueStr || !dueStr.includes("T")) continue; // date-only handled above
+
+        const taskTime = new Date(dueStr);
+        if (taskTime < in10 || taskTime >= in20) continue; // not in the 10-min window
+
+        const title    = prop(page, "Title",    "title")  ?? "(untitled)";
+        const priority = prop(page, "Priority", "select");
+        const emoji    = PRIORITY_EMOJI[priority] ?? "⚪";
+
+        const sentMsg = await bot.api.sendMessage(
+          chatId,
+          `⏰ *In 10 min:* ${emoji} ${title} · ${dueStr.slice(11, 16)}\n_Reply: 1h · 2h · tomorrow · skip_`,
+          { parse_mode: "Markdown" }
+        );
+
+        reminderMessages.set(sentMsg.message_id, page.id);
+        remindedToday.add(page.id);
+      }
+    } catch (err) {
+      console.error("[scheduler] Time reminder check failed:", err.message);
+    }
+  });
+
+  console.log("✅ Scheduler started (09:00 digest · 19:00 overdue · 21:00 wrap-up · Sunday 18:00 review · 03:00 escalation · time reminders)");
 }

@@ -1,5 +1,5 @@
 import { downloadVoice, transcribe } from "./whisper.js";
-import { dispatch } from "./claude.js";
+import { dispatch, analyzePhoto } from "./claude.js";
 import {
   createTask,
   clearAllTasks,
@@ -15,6 +15,7 @@ import {
   getUpcomingTasks,
 } from "./notion.js";
 import { formatTaskList, formatTaskConfirmation, prop } from "./format.js";
+import { reminderMessages } from "./state.js";
 
 // Last shown task list per chat — for inline button context
 const lastList = new Map();
@@ -40,18 +41,105 @@ export async function onVoice(ctx) {
   }
 }
 
+// ── Photo entry point ─────────────────────────────────────────────────────────
+
+export async function onPhoto(ctx) {
+  const statusMsg = await ctx.reply("🔍 Analyzing image...");
+  try {
+    const photo    = ctx.message.photo.at(-1); // highest resolution
+    const fileInfo = await ctx.api.getFile(photo.file_id);
+    const imageUrl = `https://api.telegram.org/file/bot${ctx.api.token}/${fileInfo.file_path}`;
+
+    const task = await analyzePhoto(imageUrl);
+    if (!task) {
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, "❓ No task found in image.");
+      return;
+    }
+
+    await createTask(task);
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      formatTaskConfirmation(task),
+      { parse_mode: "Markdown" }
+    );
+  } catch (err) {
+    console.error("[onPhoto]", err.message);
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, `❌ ${err.message}`);
+  }
+}
+
 // ── Text entry point ──────────────────────────────────────────────────────────
 
 export async function onText(ctx) {
   const text = ctx.message.text;
   if (text.startsWith("/")) return;
 
+  // If replying to a bot reminder, try snooze first
+  if (ctx.message.reply_to_message) {
+    const handled = await trySnooze(ctx, text);
+    if (handled) return;
+  }
+
+  // Forwarded messages: prefix with context so the AI treats it as a task
+  const isForwarded = !!(ctx.message.forward_date ?? ctx.message.forward_origin);
+  const input = isForwarded ? `Create a task from this forwarded message: ${text}` : text;
+
   const statusMsg = await ctx.reply("⏳ Processing...");
   try {
-    await runDispatch(ctx, text, statusMsg.message_id);
+    await runDispatch(ctx, input, statusMsg.message_id);
   } catch (err) {
     console.error("[onText]", err.message);
     await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, `❌ ${err.message}`);
+  }
+}
+
+// ── Snooze helper ─────────────────────────────────────────────────────────────
+// Called when the user replies to a bot reminder message.
+// Recognized commands: 1h · 2h · tomorrow / tmrw · skip
+
+async function trySnooze(ctx, text) {
+  const replyMsgId = ctx.message.reply_to_message?.message_id;
+  const pageId = reminderMessages.get(replyMsgId);
+  if (!pageId) return false;
+
+  const t = text.trim().toLowerCase();
+  const statusMsg = await ctx.reply("⏰ Snoozing...");
+
+  try {
+    let newDate;
+    const now = new Date();
+
+    if (t === "1h") {
+      const d = new Date(now.getTime() + 3600000);
+      newDate = d.toISOString().slice(0, 16) + ":00+02:00";
+    } else if (t === "2h") {
+      const d = new Date(now.getTime() + 7200000);
+      newDate = d.toISOString().slice(0, 16) + ":00+02:00";
+    } else if (t === "tomorrow" || t === "tmrw") {
+      const d = new Date(now);
+      d.setDate(d.getDate() + 1);
+      newDate = d.toISOString().slice(0, 10);
+    } else if (t === "skip") {
+      reminderMessages.delete(replyMsgId);
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, "⏭ Reminder dismissed.");
+      return true;
+    } else {
+      // Not a snooze command — let normal dispatch handle it
+      await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {});
+      return false;
+    }
+
+    await rescheduleTask(pageId, newDate);
+    reminderMessages.delete(replyMsgId);
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      `⏰ Snoozed to *${newDate.slice(0, 10)}${newDate.includes("T") ? " " + newDate.slice(11, 16) : ""}*`,
+      { parse_mode: "Markdown" }
+    );
+    return true;
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, `❌ ${err.message}`);
+    return true;
   }
 }
 

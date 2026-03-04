@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { readFileSync, writeFileSync } from "fs";
 import { Bot } from "grammy";
-import { onVoice, onText, onCallback } from "./handlers.js";
+import { onVoice, onText, onPhoto, onCallback } from "./handlers.js";
 import { getTodaysTasks } from "./notion.js";
 import { formatTaskList } from "./format.js";
 import { startScheduler } from "./scheduler.js";
@@ -45,7 +45,7 @@ bot.command("start", (ctx) => {
   return ctx.reply(
     "👋 Hi! I'm your personal task assistant.\n\n" +
     "*Create tasks:*\n" +
-    "• Send a voice message or type any task\n" +
+    "• Voice message, text, photo/screenshot, or forwarded message\n" +
     "• _\"Water my plants every 2 weeks\"_ → recurring task\n\n" +
     "*Query tasks:*\n" +
     "• _what do I have today?_\n" +
@@ -54,8 +54,11 @@ bot.command("start", (ctx) => {
     "• ✅ Complete · 🗑 Delete · ⏭ Move to tomorrow\n" +
     "• _complete 1_ · _delete 2_ · _reschedule 1_\n\n" +
     "*Reminders:*\n" +
-    "• Morning digest at 9:00 AM every day\n" +
-    "• Tick _Remind_ on a task in Notion → get a reminder ping",
+    "• 🌅 9:00 AM — morning digest\n" +
+    "• ⚠️ 7:00 PM — overdue alert\n" +
+    "• 🌙 9:00 PM — evening wrap-up\n" +
+    "• 📊 Sunday 6:00 PM — weekly review\n" +
+    "• ⏰ 10-min ping for timed tasks (reply: _1h · 2h · tomorrow · skip_)",
     { parse_mode: "Markdown" }
   );
 });
@@ -77,8 +80,13 @@ bot.command("help", (ctx) =>
     "/today – Today's tasks with action buttons\n" +
     "/chatid – Your chat ID\n" +
     "/help – This message\n\n" +
-    "*Priorities:* P1 🔴 urgent · P2 🟡 normal · P3 🟢 someday\n" +
-    "*Reminders:* tick _Remind_ in Notion on any task",
+    "*Priorities:* P1 🔴 urgent · P2 🟡 normal · P3 🟢 someday\n\n" +
+    "*Input types:*\n" +
+    "• 🎙 Voice message\n" +
+    "• ✍️ Text (or forwarded message)\n" +
+    "• 📷 Photo/screenshot → task extracted via AI\n\n" +
+    "*Snooze a reminder:* reply to it with _1h_, _2h_, _tomorrow_, or _skip_\n\n" +
+    "*Escalation:* P3 auto-upgrades to P2 after 7 days overdue; P2 → P1 after 14 days",
     { parse_mode: "Markdown" }
   )
 );
@@ -86,6 +94,7 @@ bot.command("help", (ctx) =>
 // ── Message handlers ──────────────────────────────────────────────────────────
 
 bot.on("message:voice",       onVoice);
+bot.on("message:photo",       onPhoto);
 bot.on("message:text", (ctx) => { saveChatId(ctx.chat.id); return onText(ctx); });
 bot.on("callback_query:data", onCallback);
 

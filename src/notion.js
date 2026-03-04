@@ -191,6 +191,169 @@ export async function getTasksByDate(dateISO) {
   return response.results;
 }
 
+/**
+ * Fetches all Open tasks with Due date before today (overdue).
+ */
+export async function getOverdueTasks() {
+  const today = new Date().toISOString().slice(0, 10);
+  const response = await notion.databases.query({
+    database_id: DATABASE_ID,
+    filter: {
+      and: [
+        { property: "Due",    date:   { before: today } },
+        { property: "Status", select: { does_not_equal: "Done" } },
+      ],
+    },
+    sorts: [
+      { property: "Priority", direction: "ascending" },
+      { property: "Due",      direction: "ascending" },
+    ],
+  });
+  return response.results;
+}
+
+/**
+ * Fetches tasks marked Done with a due date of today.
+ */
+export async function getDoneTodayTasks() {
+  const today = new Date().toISOString().slice(0, 10);
+  const response = await notion.databases.query({
+    database_id: DATABASE_ID,
+    filter: {
+      and: [
+        { property: "Due",    date:   { equals: today } },
+        { property: "Status", select: { equals: "Done" } },
+      ],
+    },
+    sorts: [{ property: "Priority", direction: "ascending" }],
+  });
+  return response.results;
+}
+
+/**
+ * Fetches Done tasks with due date in the current calendar week.
+ */
+export async function getDoneThisWeekTasks() {
+  const now = new Date();
+  const day = now.getDay();
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() + diffToMonday);
+  monday.setHours(0, 0, 0, 0);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  const toISO = (d) => d.toISOString().slice(0, 10);
+
+  const response = await notion.databases.query({
+    database_id: DATABASE_ID,
+    filter: {
+      and: [
+        { property: "Due",    date:   { on_or_after:  toISO(monday) } },
+        { property: "Due",    date:   { on_or_before: toISO(sunday) } },
+        { property: "Status", select: { equals: "Done" } },
+      ],
+    },
+    sorts: [{ property: "Due", direction: "ascending" }],
+  });
+  return response.results;
+}
+
+/**
+ * Fetches Open tasks due next calendar week (Mon–Sun).
+ */
+export async function getNextWeekTasks() {
+  const now = new Date();
+  const day = now.getDay();
+  const daysUntilNextMonday = day === 0 ? 1 : 8 - day;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() + daysUntilNextMonday);
+  monday.setHours(0, 0, 0, 0);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  const toISO = (d) => d.toISOString().slice(0, 10);
+
+  const response = await notion.databases.query({
+    database_id: DATABASE_ID,
+    filter: {
+      and: [
+        { property: "Due",    date:   { on_or_after:  toISO(monday) } },
+        { property: "Due",    date:   { on_or_before: toISO(sunday) } },
+        { property: "Status", select: { does_not_equal: "Done" } },
+      ],
+    },
+    sorts: [
+      { property: "Due",      direction: "ascending" },
+      { property: "Priority", direction: "ascending" },
+    ],
+  });
+  return response.results;
+}
+
+/**
+ * Fetches all tasks due today (date or datetime) with Remind = true.
+ * Broader than getRemindableTasks — catches datetime tasks too.
+ */
+export async function getTodayRemindableTasks() {
+  const today    = new Date().toISOString().slice(0, 10);
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  const response = await notion.databases.query({
+    database_id: DATABASE_ID,
+    filter: {
+      and: [
+        { property: "Due",    date:     { on_or_after: today } },
+        { property: "Due",    date:     { before:      tomorrow } },
+        { property: "Status", select:   { does_not_equal: "Done" } },
+        { property: "Remind", checkbox: { equals: true } },
+      ],
+    },
+  });
+  return response.results;
+}
+
+/**
+ * Escalates overdue task priorities:
+ *   P3 → P2 after 7+ days overdue
+ *   P2 → P1 after 14+ days overdue
+ * Returns array of {title, oldPriority, newPriority}.
+ */
+export async function escalateOverdueTasks() {
+  const today = new Date();
+  const sevenDaysAgo    = new Date(today); sevenDaysAgo.setDate(today.getDate() - 7);
+  const fourteenDaysAgo = new Date(today); fourteenDaysAgo.setDate(today.getDate() - 14);
+
+  const response = await notion.databases.query({
+    database_id: DATABASE_ID,
+    filter: {
+      and: [
+        { property: "Due",    date:   { before: today.toISOString().slice(0, 10) } },
+        { property: "Status", select: { does_not_equal: "Done" } },
+      ],
+    },
+  });
+
+  const escalated = [];
+  for (const page of response.results) {
+    const priority = page.properties["Priority"]?.select?.name;
+    const dueStr   = page.properties["Due"]?.date?.start;
+    if (!dueStr || !priority) continue;
+
+    const dueDate = new Date(dueStr);
+    let newPriority = null;
+    if (priority === "P3" && dueDate <= sevenDaysAgo)    newPriority = "P2";
+    if (priority === "P2" && dueDate <= fourteenDaysAgo) newPriority = "P1";
+
+    if (newPriority) {
+      await notion.pages.update({
+        page_id: page.id,
+        properties: { Priority: { select: { name: newPriority } } },
+      });
+      const title = page.properties["Title"]?.title?.[0]?.plain_text ?? "(untitled)";
+      escalated.push({ title, oldPriority: priority, newPriority });
+    }
+  }
+  return escalated;
+}
+
 export async function getThisWeeksTasks() {
   const now = new Date();
   const day = now.getDay();
